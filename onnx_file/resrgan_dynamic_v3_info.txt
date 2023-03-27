@@ -1,0 +1,7 @@
+Time used: 44 min
+Dynamic input shape: 
+    min: (1,3,256,256)
+    opt: (4,3,512,512)
+    max: (8,3,1024,1024)
+Log: resrgan_v3
+Tmux: 16

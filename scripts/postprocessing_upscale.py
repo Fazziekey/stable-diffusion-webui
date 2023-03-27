@@ -61,7 +61,9 @@ class ScriptPostprocessingUpscale(scripts_postprocessing.ScriptPostprocessing):
         if cached_image is not None:
             image = cached_image
         else:
+            print(f"upscaler is : {upscaler}, \n upscaler.scaler is : {upscaler.scaler}")
             image = upscaler.scaler.upscale(image, upscale_by, upscaler.data_path)
+            
 
         upscale_cache[cache_key] = image
         if len(upscale_cache) > shared.opts.upscaling_max_images_in_cache:
@@ -126,6 +128,6 @@ class ScriptPostprocessingUpscaleSimple(ScriptPostprocessingUpscale):
 
         upscaler1 = next(iter([x for x in shared.sd_upscalers if x.name == upscaler_name]), None)
         assert upscaler1, f'could not find upscaler named {upscaler_name}'
-
+        
         pp.image = self.upscale(pp.image, pp.info, upscaler1, 0, upscale_by, 0, 0, False)
         pp.info[f"Postprocess upscaler"] = upscaler1.name

@@ -43,17 +43,23 @@ class UpscalerRealESRGAN(Upscaler):
             return img
 
         upsampler = RealESRGANer(
-            scale=info.scale,
-            model_path=info.local_data_path,
-            model=info.model(),
-            half=not cmd_opts.no_half and not cmd_opts.upcast_sampling,
-            tile=opts.ESRGAN_tile,
-            tile_pad=opts.ESRGAN_tile_overlap,
+            scale=info.scale, # scale (int): Upsampling scale factor used in the networks. It is usually 2 or 4.
+            model_path=info.local_data_path, # model_path (str): The path to the pretrained model. It can be urls (will first download it automatically).
+            model=info.model(), # model (nn.Module): The defined network. Default: None.
+            half=not cmd_opts.no_half and not cmd_opts.upcast_sampling, # half (float): Whether to use half precision during inference. Default: False.
+            tile=opts.ESRGAN_tile, # tile (int): As too large images result in the out of GPU memory issue, so this tile option will first crop
+                                    # input images into tiles, and then process each of them. Finally, they will be merged into one image.
+                                    # 0 denotes for do not use tile. Default: 0.
+            tile_pad=opts.ESRGAN_tile_overlap,  # tile_pad (int): The pad size for each tile, to remove border artifacts. Default: 10.
         )
+        # np.array(img).shape = (512, 512, 3) w, h, channel
+        upsampled, mode = upsampler.enhance(np.array(img), outscale=info.scale)
+        image = Image.fromarray(upsampled, mode=mode)
+        output_file = "./sample_test_output/resrgan_512_512_test.jpg"
+        image.save(output_file)
+        print(f"success")
+        exit()
 
-        upsampled = upsampler.enhance(np.array(img), outscale=info.scale)[0]
-
-        image = Image.fromarray(upsampled)
         return image
 
     def load_model(self, path):
