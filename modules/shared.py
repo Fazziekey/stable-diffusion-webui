@@ -112,6 +112,17 @@ parser.add_argument("--skip-version-check", action='store_true', help="Do not ch
 parser.add_argument("--no-hashing", action='store_true', help="disable sha256 hashing of checkpoints to help loading performance", default=False)
 parser.add_argument("--no-download-sd-model", action='store_true', help="don't download SD1.5 model even if no model is found in --ckpt-dir", default=False)
 
+parser.add_argument("--realesrgan-trt", type=str, default="tensorrt_models/resrgan_dynamic_v5.pth", help="tensorRT model for Real-ESRGAN x4 model used for speeding up inference")
+parser.add_argument("--no-resrgan-trt", action='store_true', default=False, help="not use tensorRT")
+parser.add_argument("--max-workspace-size", type=int, default=10 * (1 << 30), help="max_workspace_size for converting pytorch model to tensorrt model")
+parser.add_argument("--min-h", type=int, default=256, help="minimal input image height for dynamic tensorrt model")
+parser.add_argument("--min-w", type=int, default=256, help="minimal input image width for dynamic tensorrt model")
+parser.add_argument("--max-h", type=int, default=976, help="maximal input image height for dynamic tensorrt model")
+parser.add_argument("--max-w", type=int, default=976, help="maximal input image width for dynamic tensorrt model")
+parser.add_argument("--min-batch-size", type=int, default=1, help="minimal batch size for dynamic tensorrt model")
+parser.add_argument("--max-batch-size", type=int, default=1, help="maximal batch size for dynamic tensorrt model")
+
+
 
 script_loading.preload_extensions(extensions.extensions_dir, parser)
 script_loading.preload_extensions(extensions.extensions_builtin_dir, parser)
@@ -369,8 +380,8 @@ options_templates.update(options_section(('saving-to-dirs', "Saving to a directo
 }))
 
 options_templates.update(options_section(('upscaling', "Upscaling"), {
-    "ESRGAN_tile": OptionInfo(192, "Tile size for ESRGAN upscalers. 0 = no tiling.", gr.Slider, {"minimum": 0, "maximum": 512, "step": 16}),
-    "ESRGAN_tile_overlap": OptionInfo(8, "Tile overlap, in pixels for ESRGAN upscalers. Low values = visible seam.", gr.Slider, {"minimum": 0, "maximum": 48, "step": 1}),
+    "ESRGAN_tile": OptionInfo(512, "Tile size for ESRGAN upscalers. 0 = no tiling.", gr.Slider, {"minimum": 0, "maximum": 512, "step": 16}),
+    "ESRGAN_tile_overlap": OptionInfo(4, "Tile overlap, in pixels for ESRGAN upscalers. Low values = visible seam.", gr.Slider, {"minimum": 0, "maximum": 48, "step": 1}),
     "realesrgan_enabled_models": OptionInfo(["R-ESRGAN 4x+", "R-ESRGAN 4x+ Anime6B"], "Select which Real-ESRGAN models to show in the web UI. (Requires restart)", gr.CheckboxGroup, lambda: {"choices": shared_items.realesrgan_models_names()}),
     "upscaler_for_img2img": OptionInfo(None, "Upscaler for img2img", gr.Dropdown, lambda: {"choices": [x.name for x in sd_upscalers]}),
 }))

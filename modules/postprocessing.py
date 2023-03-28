@@ -15,7 +15,6 @@ def run_postprocessing(extras_mode, image, image_folder, input_dir, output_dir, 
     image_data = []
     image_names = []
     outputs = []
-
     if extras_mode == 1:
         for img in image_folder:
             image = Image.open(img)

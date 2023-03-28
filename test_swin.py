@@ -385,8 +385,6 @@ if __name__ == "__main__":
     img, max_range = pre_process(args.img_path)
 
     output = inference(engine_file_path, img)
-    # output_shape = tuple([1,3,4 * img.shape[2], 4 * img.shape[3]])
-    # output = do_inference(engine_file_path, img, output_shape)
     print(f"output is {output}")
 
     exit()

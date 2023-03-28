@@ -20,12 +20,13 @@ engine_file_path = "./onnx_file/resrgan_dynamic_v5.engine"
 repeat_time = 1   # used for testing inference time
 
 pre_pad = 10
-image_file = "./sample_test/sample_512_512.png"
+image_file = "./sample_test/sample_512_512.jpg"
 output_file = "./sample_test_output/resrgan_512_512_outputx4.jpg"
 
 def pre_process(image_file, pre_pad=pre_pad):
     image = Image.open(image_file)
     image.convert("RGB")
+
     img = np.array(image)
     h_input, w_input = img.shape[0:2]
 
@@ -40,8 +41,8 @@ def pre_process(image_file, pre_pad=pre_pad):
 
     img_mode = 'RGB'
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    img = torch.from_numpy(np.transpose(img, (2, 0, 1))).float()
 
+    img = torch.from_numpy(np.transpose(img, (2, 0, 1))).float()
     img = img.unsqueeze(0).to("cuda")
 
     # pre_pad
@@ -102,9 +103,9 @@ def get_tensorrt():
                 (1, 3, 512, 512),   # opt
                 (1, 3, 976, 976)   # max
             ]
-        trt_model = torch2trt(model, [inputs], fp16_mode=True, log_level=trt.Logger.INFO, max_workspace_size=10 * (1 << 30))
-        # trt_model = torch2trt(model, [inputs], fp16_mode=True, log_level=trt.Logger.INFO, max_workspace_size=10 * (1 << 30),\
-        #                       min_shapes=opt_shape_param[0],max_shapes=opt_shape_param[2], opt_shapes=opt_shape_param[1])
+        # trt_model = torch2trt(model, [inputs], fp16_mode=True, log_level=trt.Logger.INFO, max_workspace_size=10 * (1 << 30))
+        trt_model = torch2trt(model, [inputs], fp16_mode=True, log_level=trt.Logger.INFO, max_workspace_size=10 * (1 << 30),\
+                              min_shapes=opt_shape_param[0],max_shapes=opt_shape_param[2], opt_shapes=opt_shape_param[1])
         print("Completing converting!")
         torch.save(trt_model.state_dict(), tensorrt_file)
         print("Saved pth file!")
@@ -117,6 +118,10 @@ def get_tensorrt():
 
 def inference(use_tensorrt):
     img, max_range = pre_process(image_file)
+    print(img.dtype)
+    print(img)
+    exit()
+
     if use_tensorrt:
         print(f"Using tensort RT...")
         model_trt = TRTModule()
