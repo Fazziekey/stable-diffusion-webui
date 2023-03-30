@@ -186,7 +186,6 @@ class RealESRGANerRT(RealESRGANer):
                 input_tile_width = input_end_x - input_start_x
                 input_tile_height = input_end_y - input_start_y
                 tile_idx = y * tiles_x + x + 1
-                print(f"image shape: {self.img.shape}")
                 input_tile = self.img[:, :, input_start_y_pad:input_end_y_pad, input_start_x_pad:input_end_x_pad]
                 
                 start = time.time()
