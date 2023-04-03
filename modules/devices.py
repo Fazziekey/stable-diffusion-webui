@@ -23,11 +23,11 @@ def extract_device_id(args, name):
 
 def get_cuda_device_string():
     from modules import shared
+    return f"cuda:{torch.cuda.current_device()}"
+    # if shared.cmd_opts.device_id is not None:
+    #     return f"cuda:{shared.cmd_opts.device_id}"
 
-    if shared.cmd_opts.device_id is not None:
-        return f"cuda:{shared.cmd_opts.device_id}"
-
-    return "cuda"
+    # return "cuda"
 
 
 def get_optimal_device_name():

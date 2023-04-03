@@ -3,13 +3,22 @@ import sys
 import threading
 import traceback
 import time
+import collections
+import torch
 
 from modules import shared, progress
+from modules.concurrency import func_thread
 
 queue_lock = threading.Lock()
 
+idle_device_queue = collections.deque()
+for i in range(torch.cuda.device_count()):
+    idle_device_queue.append(i)
+print(f"at the beginning, the device queue is {idle_device_queue}, queue len is {len(idle_device_queue)}")
+
 
 def wrap_queued_call(func):
+
     def f(*args, **kwargs):
         with queue_lock:
             res = func(*args, **kwargs)
@@ -20,8 +29,8 @@ def wrap_queued_call(func):
 
 
 def wrap_gradio_gpu_call(func, extra_outputs=None):
-    def f(*args, **kwargs):
 
+    def f(*args, **kwargs):
         # if the first argument is a string that says "task(...)", it is treated as a job id
         if len(args) > 0 and type(args[0]) == str and args[0][0:5] == "task(" and args[0][-1] == ")":
             id_task = args[0]
@@ -29,16 +38,39 @@ def wrap_gradio_gpu_call(func, extra_outputs=None):
         else:
             id_task = None
 
-        with queue_lock:
-            shared.state.begin()
-            progress.start_task(id_task)
 
+        if 'txt2img' in str(func) or 'img2img' in str(func) or 'run_postprocessing' in str(func):
+            concur = True
+        else:
+            concur = False
+    
+        print(f"-----------[0] current device queue len is {len(idle_device_queue)}-----------")
+
+        if len(idle_device_queue) > 0 and concur:
+            device_id = idle_device_queue.popleft()
+        
+            
+            print(f"-----------[1] Func using multi devices is {func}, the device queue is {idle_device_queue}-----------")
             try:
-                res = func(*args, **kwargs)
+                thread = func_thread(device_id, func(*args, **kwargs), id_task)
+                thread.start()
+                res = thread.join()
             finally:
+                idle_device_queue.append(device_id)
                 progress.finish_task(id_task)
-
+                print(f"-----------[2] at the end, the device queue is {idle_device_queue}-----------")
             shared.state.end()
+
+        else:
+            with queue_lock:
+                shared.state.begin()
+                progress.start_task(id_task)
+                try:
+                    print(f"-----no concurrency, func is {func}--------")
+                    res = func(*args, **kwargs)
+                finally:
+                    progress.finish_task(id_task)
+                shared.state.end()
 
         return res
 
@@ -46,6 +78,7 @@ def wrap_gradio_gpu_call(func, extra_outputs=None):
 
 
 def wrap_gradio_call(func, extra_outputs=None, add_stats=False):
+
     def f(*args, extra_outputs_array=extra_outputs, **kwargs):
         run_memmon = shared.opts.memmon_poll_rate > 0 and not shared.mem_mon.disabled and add_stats
         if run_memmon:
@@ -102,8 +135,6 @@ def wrap_gradio_call(func, extra_outputs=None, add_stats=False):
 
         # last item is always HTML
         res[-1] += f"<div class='performance'><p class='time'>Time taken: <wbr>{elapsed_text}</p>{vram_html}</div>"
-
         return tuple(res)
-
     return f
 
