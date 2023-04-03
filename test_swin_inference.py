@@ -2,14 +2,17 @@ from collections import OrderedDict
 import time
 import numpy as np
 import torch
+from torch.nn import functional as F
+
 import tensorrt as trt
 from PIL import Image
+import cv2
 from polygraphy.backend.trt import util as trt_util
 from polygraphy.backend.trt import engine_from_bytes
 from polygraphy.backend.common import bytes_from_path
 from polygraphy import cuda
 
-G_LOGGER = trt.Logger(trt.Logger.WARNING)
+G_LOGGER = trt.Logger(trt.Logger.ERROR)
 pre_pad = 10
 
 def pre_process(image_file, pre_pad=pre_pad):
@@ -38,6 +41,23 @@ def pre_process(image_file, pre_pad=pre_pad):
     if pre_pad != 0:
         img = F.pad(img, (0, pre_pad, 0, pre_pad), 'reflect')
     return img, max_range
+
+def post_process(output, max_range, pre_pad=pre_pad, scale=4):
+    # remove prepad
+    if pre_pad != 0:
+        _, _, h, w = output.size()
+        output = output[:, :, 0:h - pre_pad * scale, 0:w - pre_pad * scale]
+    
+    output = output.data.squeeze().float().cpu().clamp_(0, 1).numpy()
+    output = np.transpose(output[[2, 1, 0], :, :], (1, 2, 0))
+
+    # ------------------------------ return ------------------------------ #
+    if max_range == 65535:  # 16-bit image
+        output = (output * 65535.0).round().astype(np.uint16)
+    else:
+        output = (output * 255.0).round().astype(np.uint8)
+
+    return output
 
 def allocate_buffer(engine, context, input: torch.tensor, output_shape: tuple):
     # allocate_buffers
@@ -81,10 +101,10 @@ def inference(engine_file_path, input):
 
         # allocate buffers
         tensors, buffers = allocate_buffer(engine, context, input, output_shape)
-        print(f"Tensors input shape: {tensors['input'].shape}\ninput: {tensors['input']}")
-        print(f"Tensors output shape: {tensors['output'].shape}\noutput: {tensors['output']}")
-        print(f"Buffers input shape: {buffers['input'].shape}\ninput: {buffers['input']}")
-        print(f"Buffers output shape: {buffers['output'].shape}\noutput: {buffers['output']}")
+        # print(f"Tensors input shape: {tensors['input'].shape}\ninput: {tensors['input']}")
+        # print(f"Tensors output shape: {tensors['output'].shape}\noutput: {tensors['output']}")
+        # print(f"Buffers input shape: {buffers['input'].shape}\ninput: {buffers['input']}")
+        # print(f"Buffers output shape: {buffers['output'].shape}\noutput: {buffers['output']}")
         print(f"tensor is {tensors}, buffer is {buffers}")
 
         bindings =[buf.ptr for buf in buffers.values()]
@@ -115,6 +135,17 @@ def inference(engine_file_path, input):
 
 
 engine_file_path = "./onnx_file/swinir_dynamic_v7.engine"
-input = torch.rand((1,3,512,512), dtype=torch.float32, device="cuda")
-output = inference(engine_file_path, input)
-print(output)
+img_path = "./sample_test/sample_512_512.jpg"
+output_file = "./sample_test_output/swinir_512_512_outputx4.jpg"
+
+img, max_range = pre_process(img_path)
+print(f"input is {img}")
+output = inference(engine_file_path, img)
+print(f"output is {output}")
+exit()
+
+output_img = post_process(output, max_range)
+
+
+img = cv2.cvtColor(output_img, cv2.COLOR_BGR2RGB)
+cv2.imwrite(output_file, img)
