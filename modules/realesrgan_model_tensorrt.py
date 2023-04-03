@@ -7,7 +7,8 @@ import threading
 import torch
 from basicsr.utils.download_util import load_file_from_url
 import time
-from torch2trt import torch2trt
+from modules.torch2trt_update import torch2trt
+#from torch2trt import torch2trt
 from torch.nn import functional as F
 from realesrgan import RealESRGANer
 from modules.shared import cmd_opts, opts
