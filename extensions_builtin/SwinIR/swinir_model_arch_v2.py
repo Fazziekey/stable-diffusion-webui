@@ -10,6 +10,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.checkpoint as checkpoint
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
+import xformers.ops as xops
 
 
 class Mlp(nn.Module):
@@ -74,7 +75,7 @@ class WindowAttention(nn.Module):
     """
 
     def __init__(self, dim, window_size, num_heads, qkv_bias=True, attn_drop=0., proj_drop=0.,
-                 pretrained_window_size=[0, 0]):
+                 pretrained_window_size=[0, 0], use_memory_efficient=False):
 
         super().__init__()
         self.dim = dim
@@ -120,17 +121,22 @@ class WindowAttention(nn.Module):
         relative_position_index = relative_coords.sum(-1)  # Wh*Ww, Wh*Ww
         self.register_buffer("relative_position_index", relative_position_index)
 
-        self.qkv = nn.Linear(dim, dim * 3, bias=False)
-        if qkv_bias:
-            self.q_bias = nn.Parameter(torch.zeros(dim))
-            self.v_bias = nn.Parameter(torch.zeros(dim))
+        self.use_memory_efficient = use_memory_efficient
+        if self.use_memory_efficient:
+            self.attention = MemoryEfficientAttention(dim=dim, heads=num_heads, out_drop=proj_drop)
         else:
-            self.q_bias = None
-            self.v_bias = None
-        self.attn_drop = nn.Dropout(attn_drop)
-        self.proj = nn.Linear(dim, dim)
-        self.proj_drop = nn.Dropout(proj_drop)
-        self.softmax = nn.Softmax(dim=-1)
+            self.qkv = nn.Linear(dim, dim * 3, bias=False)
+            if qkv_bias:
+                self.q_bias = nn.Parameter(torch.zeros(dim))
+                self.v_bias = nn.Parameter(torch.zeros(dim))
+            else:
+                self.q_bias = None
+                self.v_bias = None
+            
+            self.attn_drop = nn.Dropout(attn_drop)
+            self.proj = nn.Linear(dim, dim)
+            self.proj_drop = nn.Dropout(proj_drop)
+            self.softmax = nn.Softmax(dim=-1)
 
     def forward(self, x, mask=None):
         """
@@ -138,39 +144,48 @@ class WindowAttention(nn.Module):
             x: input features with shape of (num_windows*B, N, C)
             mask: (0/-inf) mask with shape of (num_windows, Wh*Ww, Wh*Ww) or None
         """
-        B_, N, C = x.shape
-        qkv_bias = None
-        if self.q_bias is not None:
-            qkv_bias = torch.cat((self.q_bias, torch.zeros_like(self.v_bias, requires_grad=False), self.v_bias))
-        qkv = F.linear(input=x, weight=self.qkv.weight, bias=qkv_bias)
-        qkv = qkv.reshape(B_, N, 3, self.num_heads, -1).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv[0], qkv[1], qkv[2]  # make torchscript happy (cannot use tensor as tuple)
-
-        # cosine attention
-        attn = (F.normalize(q, dim=-1) @ F.normalize(k, dim=-1).transpose(-2, -1))
-        logit_scale = torch.clamp(self.logit_scale, max=torch.log(torch.tensor(1. / 0.01)).to(self.logit_scale.device)).exp()
-        attn = attn * logit_scale
-
+        
+        # get attention bias
         relative_position_bias_table = self.cpb_mlp(self.relative_coords_table).view(-1, self.num_heads)
         relative_position_bias = relative_position_bias_table[self.relative_position_index.view(-1)].view(
             self.window_size[0] * self.window_size[1], self.window_size[0] * self.window_size[1], -1)  # Wh*Ww,Wh*Ww,nH
         relative_position_bias = relative_position_bias.permute(2, 0, 1).contiguous()  # nH, Wh*Ww, Wh*Ww
         relative_position_bias = 16 * torch.sigmoid(relative_position_bias)
-        attn = attn + relative_position_bias.unsqueeze(0)
 
-        if mask is not None:
-            nW = mask.shape[0]
-            attn = attn.view(B_ // nW, nW, self.num_heads, N, N) + mask.unsqueeze(1).unsqueeze(0)
-            attn = attn.view(-1, self.num_heads, N, N)
-            attn = self.softmax(attn)
+        # get scale factor
+        logit_scale = torch.clamp(self.logit_scale, max=torch.log(torch.tensor(1. / 0.01)).to(self.logit_scale.device)).exp()
+
+        if self.use_memory_efficient:
+            x = self.attention(x=x, scale=logit_scale, attn_bias=relative_position_bias, p=self.attn_drop, mask=mask)
         else:
-            attn = self.softmax(attn)
+            B_, N, C = x.shape
+            qkv_bias = None
+            if self.q_bias is not None:
+                qkv_bias = torch.cat((self.q_bias, torch.zeros_like(self.v_bias, requires_grad=False), self.v_bias))
+            qkv = F.linear(input=x, weight=self.qkv.weight, bias=qkv_bias)
+            qkv = qkv.reshape(B_, N, 3, self.num_heads, -1).permute(2, 0, 3, 1, 4)
+            q, k, v = qkv[0], qkv[1], qkv[2]  # make torchscript happy (cannot use tensor as tuple)
 
-        attn = self.attn_drop(attn)
+            # cosine attention
+            attn = (F.normalize(q, dim=-1) @ F.normalize(k, dim=-1).transpose(-2, -1))
+            attn = attn * logit_scale
 
-        x = (attn @ v).transpose(1, 2).reshape(B_, N, C)
-        x = self.proj(x)
-        x = self.proj_drop(x)
+
+            attn = attn + relative_position_bias.unsqueeze(0)
+
+            if mask is not None:
+                nW = mask.shape[0]
+                attn = attn.view(B_ // nW, nW, self.num_heads, N, N) + mask.unsqueeze(1).unsqueeze(0)
+                attn = attn.view(-1, self.num_heads, N, N)
+                attn = self.softmax(attn)
+            else:
+                attn = self.softmax(attn)
+
+            attn = self.attn_drop(attn)
+
+            x = (attn @ v).transpose(1, 2).reshape(B_, N, C)
+            x = self.proj(x)
+            x = self.proj_drop(x)
         return x
 
     def extra_repr(self) -> str:
@@ -189,6 +204,47 @@ class WindowAttention(nn.Module):
         # x = self.proj(x)
         flops += N * self.dim * self.dim
         return flops
+    
+class MemoryEfficientAttention(nn.Module):
+    def __init__(self, dim, heads=8, out_drop=0.0):
+        super().__init__()
+        print(f"Setting up {self.__class__.__name__}. Query dim is {dim},"
+              f"{heads} heads.")
+
+        self.heads = heads
+        self.dim_head = dim // heads
+
+        self.to_q = nn.Linear(dim, dim, bias=False)
+        self.to_k = nn.Linear(dim, dim, bias=False)
+        self.to_v = nn.Linear(dim, dim, bias=False)
+
+        self.to_out = nn.Sequential(nn.Linear(dim, dim), nn.Dropout(out_drop))
+
+    def forward(self, x, scale=None, attn_bias=None, p = 0.0, mask=None):
+        q = self.to_q(x)
+        k = self.to_k(x)
+        v = self.to_v(x)
+
+        b, _, _ = q.shape
+        q, k, v = map(
+            lambda t: t.unsqueeze(3)
+            .reshape(b, t.shape[1], self.heads, self.dim_head)
+            .permute(0, 2, 1, 3)
+            .reshape(b * self.heads, t.shape[1], self.dim_head)
+            .contiguous(),
+            (q, k, v),
+        )
+
+        # actually compute the attention, what we cannot get enough of
+        out = xops.memory_efficient_attention(q, k, v, attn_bias=attn_bias, scale=scale, p = p, mask=mask)
+
+        out = (
+            out.unsqueeze(0)
+            .reshape(b, self.heads, out.shape[1], self.dim_head)
+            .permute(0, 2, 1, 3)
+            .reshape(b, out.shape[1], self.heads * self.dim_head)
+        )
+        return self.to_out(out)
 
 class SwinTransformerBlock(nn.Module):
     r""" Swin Transformer Block.
