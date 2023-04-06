@@ -11,10 +11,11 @@ from modules.concurrency import func_thread
 
 queue_lock = threading.Lock()
 
-idle_device_queue = collections.deque()
-for i in range(torch.cuda.device_count()):
-    idle_device_queue.append(i)
-print(f"at the beginning, the device queue is {idle_device_queue}, queue len is {len(idle_device_queue)}")
+if "--multicuda" in sys.argv:
+    idle_device_queue = collections.deque()
+    for i in range(torch.cuda.device_count()):
+        idle_device_queue.append(i)
+    print(f"at the beginning, the device queue is {idle_device_queue}, queue len is {len(idle_device_queue)}")
 
 
 def wrap_queued_call(func):
@@ -39,34 +40,34 @@ def wrap_gradio_gpu_call(func, extra_outputs=None):
             id_task = None
 
 
-        if 'txt2img' in str(func) or 'img2img' in str(func) or 'run_postprocessing' in str(func):
-            concur = True
-        else:
-            concur = False
-    
-        print(f"-----------[0] current device queue len is {len(idle_device_queue)}-----------")
-
-        if len(idle_device_queue) > 0 and concur:
-            device_id = idle_device_queue.popleft()
+        if "--multicuda" in sys.argv:
+            # assign txt2img, img2img, upscaling taskings to different gpus
+            if 'txt2img' in str(func) or 'img2img' in str(func) or 'run_postprocessing' in str(func):
+                concur = True
+            else:
+                concur = False
         
+            print(f"-----------[0] current device queue len is {len(idle_device_queue)}-----------")
+
+            if len(idle_device_queue) > 0 and concur:
+                device_id = idle_device_queue.popleft()
             
-            print(f"-----------[1] Func using multi devices is {func}, the device queue is {idle_device_queue}-----------")
-            try:
-                thread = func_thread(device_id, func(*args, **kwargs), id_task)
-                thread.start()
-                res = thread.join()
-            finally:
-                idle_device_queue.append(device_id)
-                progress.finish_task(id_task)
-                print(f"-----------[2] at the end, the device queue is {idle_device_queue}-----------")
-            shared.state.end()
+                print(f"-----------[1] Func using multi devices is {func}, the device queue is {idle_device_queue}-----------")
+                try:
+                    thread = func_thread(device_id, func(*args, **kwargs), id_task)
+                    thread.start()
+                    res = thread.join()
+                finally:
+                    idle_device_queue.appendleft(device_id)
+                    progress.finish_task(id_task)
+                    print(f"-----------[2] at the end, the device queue is {idle_device_queue}-----------")
+                shared.state.end()
 
         else:
             with queue_lock:
                 shared.state.begin()
                 progress.start_task(id_task)
                 try:
-                    print(f"-----no concurrency, func is {func}--------")
                     res = func(*args, **kwargs)
                 finally:
                     progress.finish_task(id_task)

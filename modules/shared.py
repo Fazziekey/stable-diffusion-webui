@@ -122,7 +122,7 @@ parser.add_argument("--max-w", type=int, default=976, help="maximal input image 
 parser.add_argument("--min-batch-size", type=int, default=1, help="minimal batch size for dynamic tensorrt model")
 parser.add_argument("--max-batch-size", type=int, default=1, help="maximal batch size for dynamic tensorrt model")
 
-parser.add_argument("--extra-multithread", action='store_true', default=False, help="not use tensorRT")
+parser.add_argument("--multicuda", action='store_true', default=False, help="whether to use multi gpu to conduct different inference tasks")
 
 
 
