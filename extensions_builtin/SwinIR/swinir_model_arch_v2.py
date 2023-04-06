@@ -82,6 +82,7 @@ class WindowAttention(nn.Module):
         self.window_size = window_size  # Wh, Ww
         self.pretrained_window_size = pretrained_window_size
         self.num_heads = num_heads
+        self.attn_drop = attn_drop
 
         self.logit_scale = nn.Parameter(torch.log(10 * torch.ones((num_heads, 1, 1))), requires_grad=True)
 
@@ -122,21 +123,21 @@ class WindowAttention(nn.Module):
         self.register_buffer("relative_position_index", relative_position_index)
 
         self.use_memory_efficient = use_memory_efficient
-        if self.use_memory_efficient:
-            self.attention = MemoryEfficientAttention(dim=dim, heads=num_heads, out_drop=proj_drop)
+        # if self.use_memory_efficient:
+        #     self.attention = MemoryEfficientAttention(dim=dim, heads=num_heads, out_drop=proj_drop)
+        # else:
+        self.qkv = nn.Linear(dim, dim * 3, bias=False)
+        if qkv_bias:
+            self.q_bias = nn.Parameter(torch.zeros(dim))
+            self.v_bias = nn.Parameter(torch.zeros(dim))
         else:
-            self.qkv = nn.Linear(dim, dim * 3, bias=False)
-            if qkv_bias:
-                self.q_bias = nn.Parameter(torch.zeros(dim))
-                self.v_bias = nn.Parameter(torch.zeros(dim))
-            else:
-                self.q_bias = None
-                self.v_bias = None
-            
+            self.q_bias = None
+            self.v_bias = None
             self.attn_drop = nn.Dropout(attn_drop)
-            self.proj = nn.Linear(dim, dim)
-            self.proj_drop = nn.Dropout(proj_drop)
-            self.softmax = nn.Softmax(dim=-1)
+
+        self.proj = nn.Linear(dim, dim)
+        self.proj_drop = nn.Dropout(proj_drop)
+        self.softmax = nn.Softmax(dim=-1)
 
     def forward(self, x, mask=None):
         """
@@ -155,18 +156,25 @@ class WindowAttention(nn.Module):
         # get scale factor
         logit_scale = torch.clamp(self.logit_scale, max=torch.log(torch.tensor(1. / 0.01)).to(self.logit_scale.device)).exp()
 
-        if self.use_memory_efficient:
-            x = self.attention(x=x, scale=logit_scale, attn_bias=relative_position_bias, p=self.attn_drop, mask=mask)
-        else:
-            B_, N, C = x.shape
-            qkv_bias = None
-            if self.q_bias is not None:
-                qkv_bias = torch.cat((self.q_bias, torch.zeros_like(self.v_bias, requires_grad=False), self.v_bias))
-            qkv = F.linear(input=x, weight=self.qkv.weight, bias=qkv_bias)
-            qkv = qkv.reshape(B_, N, 3, self.num_heads, -1).permute(2, 0, 3, 1, 4)
-            q, k, v = qkv[0], qkv[1], qkv[2]  # make torchscript happy (cannot use tensor as tuple)
+        # if self.use_memory_efficient:
+        #     x = self.attention(x=x, scale=logit_scale, attn_bias=relative_position_bias, p=self.attn_drop, mask=mask)
+        # else:
 
-            # cosine attention
+        B_, N, C = x.shape
+        qkv_bias = None
+        if self.q_bias is not None:
+            qkv_bias = torch.cat((self.q_bias, torch.zeros_like(self.v_bias, requires_grad=False), self.v_bias))
+        qkv = F.linear(input=x, weight=self.qkv.weight, bias=qkv_bias)
+        qkv = qkv.reshape(B_, N, 3, self.num_heads, -1).permute(2, 0, 3, 1, 4)
+        q, k, v = qkv[0], qkv[1], qkv[2]  # make torchscript happy (cannot use tensor as tuple)
+
+        # cosine attention
+        if self.use_memory_efficient:
+            attn_bias = relative_position_bias.unsqueeze(0)
+            out = xops.memory_efficient_attention(q, k, v, attn_bias=attn_bias, scale=logit_scale, p = self.attn_drop, mask=mask)
+            x = out.transpose(1, 2).reshape(B_, N, C)
+
+        else:
             attn = (F.normalize(q, dim=-1) @ F.normalize(k, dim=-1).transpose(-2, -1))
             attn = attn * logit_scale
 
@@ -184,8 +192,9 @@ class WindowAttention(nn.Module):
             attn = self.attn_drop(attn)
 
             x = (attn @ v).transpose(1, 2).reshape(B_, N, C)
-            x = self.proj(x)
-            x = self.proj_drop(x)
+
+        x = self.proj(x)
+        x = self.proj_drop(x)
         return x
 
     def extra_repr(self) -> str:
