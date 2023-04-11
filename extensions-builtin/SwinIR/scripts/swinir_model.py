@@ -20,12 +20,12 @@ device_swinir = devices.get_device_for('swinir')
 
 class UpscalerSwinIR(Upscaler):
     def __init__(self, dirname):
-        self.name = "Swin2IR"
-        self.model_url = "https://github.com/mv-lab/swin2sr/releases/download/v0.0.1/Swin2SR_ClassicalSR_X4_64.pth"
-        # self.model_url = "https://github.com/JingyunLiang/SwinIR/releases/download/v0.0" \
-        #                  "/003_realSR_BSRGAN_DFOWMFC_s64w8_SwinIR" \
-        #                  "-L_x4_GAN.pth "
-        self.model_name = "SwinIR 4x.v2"
+        self.name = "SwinIR"
+        # self.model_url = "https://github.com/mv-lab/swin2sr/releases/download/v0.0.1/Swin2SR_ClassicalSR_X4_64.pth"
+        self.model_url = "https://github.com/JingyunLiang/SwinIR/releases/download/v0.0" \
+                         "/003_realSR_BSRGAN_DFOWMFC_s64w8_SwinIR" \
+                         "-L_x4_GAN.pth "
+        self.model_name = "SwinIR 4x"
         self.user_path = dirname
         super().__init__()
         scalers = []
@@ -110,36 +110,42 @@ def upscale(
     tile = tile or opts.SWIN_tile
     tile_overlap = tile_overlap or opts.SWIN_tile_overlap
 
-
     img = np.array(img)
     img = img[:, :, ::-1]
     img = np.moveaxis(img, 2, 0) / 255
     img = torch.from_numpy(img).float()
     img = img.unsqueeze(0).to(device_swinir, dtype=devices.dtype)
-    repeat_time = 10
+    #ori_img = img
+    repeat_time = 1
     with torch.no_grad(), devices.autocast():
         total_time = 0
         for i in range(repeat_time):
             torch.cuda.synchronize()
-            start_time = time.time()
+            #img = ori_img
             _, _, h_old, w_old = img.size()
             h_pad = (h_old // window_size + 1) * window_size - h_old
             w_pad = (w_old // window_size + 1) * window_size - w_old
             img = torch.cat([img, torch.flip(img, [2])], 2)[:, :, : h_old + h_pad, :]
             img = torch.cat([img, torch.flip(img, [3])], 3)[:, :, :, : w_old + w_pad]
-            output = inference_without_tile(img, model)
-            #output = inference(img, model, tile, tile_overlap, window_size, scale)
-            output = output[..., : h_old * scale, : w_old * scale]
-            torch.cuda.synchronize()
+            start_time = time.time()
+
+            #output = inference_without_tile(img, model)
+            output = inference(img, model, tile, tile_overlap, window_size, scale)
             end_time = time.time()
-            if i >= 5:
+            output = output[..., : h_old * scale, : w_old * scale]
+            # except:
+            #     print(f"CUDA: {torch.cuda.max_memory_allocated()/1024**3:.2f}GB")
+
+            torch.cuda.synchronize()
+            if i >= 3:
                 total_time += end_time - start_time
-            print(f"inference time: {end_time - start_time}")
-        if repeat_time > 5:
-            print(f"average inference time: {total_time/(repeat_time-5)}")
+            print(f"inference time: {end_time - start_time}, CUDA: {torch.cuda.max_memory_allocated()/1024**3:.2f}GB")
+        if repeat_time > 3:
+            print(f"average inference time: {total_time/(repeat_time-3)}")
 
 
         output = output.data.squeeze().float().cpu().clamp_(0, 1).numpy()
+        
         if output.ndim == 3:
             output = np.transpose(
                 output[[2, 1, 0], :, :], (1, 2, 0)
@@ -148,9 +154,6 @@ def upscale(
         return Image.fromarray(output, "RGB")
 
 def inference_without_tile(img, model):
-    # onnx_path = "./onnx/swinirv2.onnx"
-    # onnx_model = convert_onnx(img, model, onnx_path)
-    # # trt_model = convert_trt(img, model)
 
     return model(img)
 
@@ -158,6 +161,7 @@ def inference(img, model, tile, tile_overlap, window_size, scale):
     # test the image tile by tile
     b, c, h, w = img.size()
     tile = min(tile, h, w)
+    print(f"tile is {tile}")
     assert tile % window_size == 0, "tile size should be a multiple of window_size"
     sf = scale
 

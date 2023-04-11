@@ -9,6 +9,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.checkpoint as checkpoint
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
+import xformers.ops as xops
 
 
 class Mlp(nn.Module):
@@ -76,7 +77,7 @@ class WindowAttention(nn.Module):
         proj_drop (float, optional): Dropout ratio of output. Default: 0.0
     """
 
-    def __init__(self, dim, window_size, num_heads, qkv_bias=True, qk_scale=None, attn_drop=0., proj_drop=0.):
+    def __init__(self, dim, window_size, num_heads, qkv_bias=True, qk_scale=None, attn_drop=0., proj_drop=0., use_memory_efficient=False):
 
         super().__init__()
         self.dim = dim
@@ -104,12 +105,16 @@ class WindowAttention(nn.Module):
 
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.attn_drop = nn.Dropout(attn_drop)
+        self.attn_drop_val = attn_drop
+        self.use_memory_efficient = use_memory_efficient
+
         self.proj = nn.Linear(dim, dim)
 
         self.proj_drop = nn.Dropout(proj_drop)
 
         trunc_normal_(self.relative_position_bias_table, std=.02)
         self.softmax = nn.Softmax(dim=-1)
+
 
     def forward(self, x, mask=None):
         """
@@ -119,27 +124,44 @@ class WindowAttention(nn.Module):
         """
         B_, N, C = x.shape
         qkv = self.qkv(x).reshape(B_, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv[0], qkv[1], qkv[2]  # make torchscript happy (cannot use tensor as tuple)
-
-        q = q * self.scale
-        attn = (q @ k.transpose(-2, -1))
 
         relative_position_bias = self.relative_position_bias_table[self.relative_position_index.view(-1)].view(
-            self.window_size[0] * self.window_size[1], self.window_size[0] * self.window_size[1], -1)  # Wh*Ww,Wh*Ww,nH
+        self.window_size[0] * self.window_size[1], self.window_size[0] * self.window_size[1], -1)  # Wh*Ww,Wh*Ww,nH
         relative_position_bias = relative_position_bias.permute(2, 0, 1).contiguous()  # nH, Wh*Ww, Wh*Ww
-        attn = attn + relative_position_bias.unsqueeze(0)
 
-        if mask is not None:
-            nW = mask.shape[0]
-            attn = attn.view(B_ // nW, nW, self.num_heads, N, N) + mask.unsqueeze(1).unsqueeze(0)
-            attn = attn.view(-1, self.num_heads, N, N)
-            attn = self.softmax(attn)
+        if self.use_memory_efficient:
+            #print(f"q, k, v shape is {qkv.shape}")
+            n_pad = 8 - qkv.shape[-1] % 8
+            pad = torch.zeros((3, B_, self.num_heads, N, n_pad), dtype=qkv.dtype, device=qkv.device)
+            qkv_xformers = torch.cat((qkv, pad), -1)
+
+            q, k, v = qkv_xformers[0], qkv_xformers[1], qkv_xformers[2]
+            # q, k, v = torch.tensor(qkv_xformers[0], dtype=torch.float32), torch.tensor(qkv_xformers[1], dtype=torch.float32), torch.tensor(qkv_xformers[2], dtype=torch.float32)  # make torchscript happy (cannot use tensor as tuple)
+
+            attn_bias = xops.fmha.common.LowerTriangularMask()
+            attn_bias._tensor = relative_position_bias.unsqueeze(0)
+
+            out = xops.memory_efficient_attention(q, k, v, scale=self.scale, attn_bias=attn_bias, p = self.attn_drop_val)
+            out = out[:, :, :, :-2]
+            x = out.transpose(1, 2).reshape(B_, N, C)
+        
         else:
-            attn = self.softmax(attn)
+            q, k, v = qkv[0], qkv[1], qkv[2]  # make torchscript happy (cannot use tensor as tuple)
+            q = q * self.scale
+            attn = (q @ k.transpose(-2, -1))
 
-        attn = self.attn_drop(attn)
+            attn = attn + relative_position_bias.unsqueeze(0)
 
-        x = (attn @ v).transpose(1, 2).reshape(B_, N, C)
+            if mask is not None:
+                nW = mask.shape[0]
+                attn = attn.view(B_ // nW, nW, self.num_heads, N, N) + mask.unsqueeze(1).unsqueeze(0)
+                attn = attn.view(-1, self.num_heads, N, N)
+                attn = self.softmax(attn)
+            else:
+                attn = self.softmax(attn)
+            attn = self.attn_drop(attn)
+            x = (attn @ v).transpose(1, 2).reshape(B_, N, C)
+
         x = self.proj(x)
         x = self.proj_drop(x)
         return x

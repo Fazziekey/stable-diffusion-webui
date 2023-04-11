@@ -60,7 +60,7 @@ class Upscaler:
         for i in range(3):
             shape = (img.width, img.height)
 
-            img = self.do_upscale(img, selected_model)
+            img = self.do_upscale(img, selected_model, scale)
 
             if shape == (img.width, img.height):
                 break

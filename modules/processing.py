@@ -501,7 +501,7 @@ def process_images(p: StableDiffusionProcessing) -> Processed:
 
 def process_images_inner(p: StableDiffusionProcessing) -> Processed:
     """this is the main loop that both txt2img and img2img use; it calls func_init once inside all the scopes and func_sample once per batch"""
-
+    
     if type(p.prompt) == list:
         assert(len(p.prompt) > 0)
     else:
@@ -584,6 +584,7 @@ def process_images_inner(p: StableDiffusionProcessing) -> Processed:
             state.job_count = p.n_iter
 
         extra_network_data = None
+
         for n in range(p.n_iter):
             p.iteration = n
 
@@ -597,6 +598,7 @@ def process_images_inner(p: StableDiffusionProcessing) -> Processed:
             negative_prompts = p.all_negative_prompts[n * p.batch_size:(n + 1) * p.batch_size]
             seeds = p.all_seeds[n * p.batch_size:(n + 1) * p.batch_size]
             subseeds = p.all_subseeds[n * p.batch_size:(n + 1) * p.batch_size]
+            print(f"seed is {seeds}, subseeds is {subseeds}")
 
             if p.scripts is not None:
                 p.scripts.before_process_batch(p, batch_number=n, prompts=prompts, seeds=seeds, subseeds=subseeds)
@@ -631,16 +633,20 @@ def process_images_inner(p: StableDiffusionProcessing) -> Processed:
 
             if p.n_iter > 1:
                 shared.state.job = f"Batch {n+1} out of {p.n_iter}"
-
+            print(f"p is {p}")
             with devices.without_autocast() if devices.unet_needs_upcast else devices.autocast():
                 samples_ddim = p.sample(conditioning=c, unconditional_conditioning=uc, seeds=seeds, subseeds=subseeds, subseed_strength=p.subseed_strength, prompts=prompts)
 
+            print(f"samples_ddim is {samples_ddim.shape}")
             x_samples_ddim = [decode_first_stage(p.sd_model, samples_ddim[i:i+1].to(dtype=devices.dtype_vae))[0].cpu() for i in range(samples_ddim.size(0))]
+            print(f"x shape is {x_samples_ddim[0].shape}")
             for x in x_samples_ddim:
                 devices.test_for_nans(x, "vae")
 
             x_samples_ddim = torch.stack(x_samples_ddim).float()
+            print(f"1 : {x_samples_ddim.shape}")
             x_samples_ddim = torch.clamp((x_samples_ddim + 1.0) / 2.0, min=0.0, max=1.0)
+            print(f"2 : {x_samples_ddim.shape}")
 
             del samples_ddim
 

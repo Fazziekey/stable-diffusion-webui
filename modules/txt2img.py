@@ -51,7 +51,7 @@ def txt2img(id_task: str, prompt: str, negative_prompt: str, prompt_styles, step
         print(f"\ntxt2img: {prompt}", file=shared.progress_print_out)
 
     processed = modules.scripts.scripts_txt2img.run(p, *args)
-
+    
     if processed is None:
         processed = process_images(p)
 

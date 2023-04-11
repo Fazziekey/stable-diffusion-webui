@@ -28,3 +28,15 @@ torchsde==0.2.5
 safetensors==0.2.7
 httpcore<=0.15
 fastapi==0.94.0
+addict
+future
+lmdb
+opencv-python
+pyyaml
+requests
+scipy
+tb-nightly
+tqdm
+yapf
+lpips
+gdown
