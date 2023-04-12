@@ -3,8 +3,8 @@ from copy import copy
 from collections import OrderedDict
 import onnx
 import torch
-from extensions_builtin.SwinIR.swinir_model_arch_v2 import Swin2SR as net2
-from extensions_builtin.SwinIR.swinir_model_arch import SwinIR as net
+# from extensions_builtin.SwinIR.swinir_model_arch_v2 import Swin2SR as net2
+# from extensions_builtin.SwinIR.swinir_model_arch import SwinIR as net
 import tensorrt as trt
 from polygraphy.backend.common import bytes_from_path
 from polygraphy.backend.trt import CreateConfig, Profile
@@ -41,7 +41,7 @@ def parseArgs():
     parser = argparse.ArgumentParser(description="Options for testing swinir")
     parser.add_argument('--onnx_path', default = "./onnx_file/swinir_dynamic.onnx", help="ONNX model file")
     parser.add_argument('--engine_file_path', default = "./onnx_file/swinir_dynamic_v7.engine", help="TensorRT engine")
-    parser.add_argument('--img_path', default = "./sample_test/sample_512_512.png", help="Input image file")
+    parser.add_argument('--img_path', default = "./sample_test/sample_512_512.jpg", help="Input image file")
     parser.add_argument('--output_file', default = "./sample_test_output/swinir_512_512_outputx4.jpg", help="Output image file")
     return parser.parse_args()
 
@@ -123,25 +123,31 @@ def convert_onnx(onnx_path, swin_version = 1):
         print(f"Found cached model: {onnx_path}")
 
 
-def test_onnx_inference(onnx_path, engine_file_path):
+def test_onnx_inference(onnx_path):
+    img, max_range = pre_process(args.img_path)
 
     net = onnx.load(onnx_path)
     onnx.checker.check_model(net)
     onnx.helper.printable_graph(net.graph)
 
-    # netron.start(onnx_path)
-
-    x = torch.randn(img_shape, requires_grad=True)
     session = onnxruntime.InferenceSession(onnx_path) 
 
     def to_numpy(tensor):
         return tensor.detach().cpu().numpy() if tensor.requires_grad else tensor.cpu().numpy()
 
     # compute ONNX Runtime output prediction
-    ort_inputs = {session.get_inputs()[0].name: to_numpy(x)}
+    ort_inputs = {session.get_inputs()[0].name: to_numpy(img)}
+    start = time.time()
     ort_outs = session.run(None, ort_inputs)
-    print(len(ort_outs))
-    print(np.array(ort_outs).shape)
+    print(f"inference time: {time.time()-start:.4f}s")
+    ort_outs = torch.tensor(ort_outs[0])
+    output_img = post_process(ort_outs, max_range)
+    print(f"the output shape is {output_img.shape}")
+
+    img = cv2.cvtColor(output_img, cv2.COLOR_BGR2RGB)
+    cv2.imwrite(args.output_file, img)
+    print("success!")
+
 
 
 def ONNX2TRT(onnx_path, engine_file_path, calib=None):
@@ -378,21 +384,20 @@ if __name__ == "__main__":
     engine_file_path = args.engine_file_path
 
     #convert_onnx(onnx_path, swin_version = 1)
-    #test_onnx_inference()
-    ONNX2TRT(onnx_path, engine_file_path)
+    test_onnx_inference(onnx_path)
+    # ONNX2TRT(onnx_path, engine_file_path)
     #ONNX2TRT_polygraphy(onnx_path, engine_file_path)
 
-    img, max_range = pre_process(args.img_path)
+    # img, max_range = pre_process(args.img_path)
 
-    output = inference(engine_file_path, img)
-    print(f"output is {output}")
+    # output = inference(engine_file_path, img)
+    # print(f"output is {output}")
 
-    exit()
-    output_img = post_process(output, max_range)
-    print(f"the output shape is {output_img.shape}")
+    # output_img = post_process(output, max_range)
+    # print(f"the output shape is {output_img.shape}")
 
-    img = cv2.cvtColor(output_img, cv2.COLOR_BGR2RGB)
-    cv2.imwrite(args.output_file, img)
+    # img = cv2.cvtColor(output_img, cv2.COLOR_BGR2RGB)
+    # cv2.imwrite(args.output_file, img)
     
 
 '''
